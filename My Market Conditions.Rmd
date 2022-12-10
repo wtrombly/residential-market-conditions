@@ -1,0 +1,306 @@
+---
+title: "Market Analysis"
+author: "Trombly Appraisal"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output: pdf_document
+params:
+  
+  SubjectStreet:   2702 Golden Hills Ct
+  SubjectCity: Fresno
+  SubjectState: TX
+  SubjectZip: 77545
+  SubGLA:   2300
+  LowGLAComp: 1900
+  HighGLAComp: 2700
+  SubYB: 2010
+  LoYB: 1985
+  HiYB: 2022
+  SubLotSF: 6000
+  EffDate:
+    label: "Effective Date"
+    value: 2020-08-25
+    input: date
+---
+
+```{r setup, include=FALSE}
+library(tidyverse)
+library(tidyquant)
+library(ggside)
+library(lubridate)
+library(ggmap)
+library(leaflet)
+library(knitr)
+library(magrittr)
+library(rmarkdown)
+library(kableExtra)
+library(gridExtra)
+library(ggpubr)
+library(censusxy)
+library(sf)
+```
+
+
+<br>
+<br>
+
+**Date of Analysis:** `r params$EffDate`
+<br>
+<br>
+**Subject Property:** 		`r params$SubjectStreet`, `r params$SubjectCity`, `r params$SubjectState`, `r params$SubjectZip` 
+<br>
+<br>
+
+The code presented here-in has been produced in great part due to the work of John Farris a fellow peer in the community of asset analysts.
+
+```{r setup2, include=FALSE, echo=FALSE}
+
+my_data <- read.table(file = "clipboard", 
+                      sep = "\t", header=TRUE, fill = TRUE)
+
+
+df2 <- my_data
+df2 <- my_data %>% 
+  mutate(PendingDate = as.Date(PendingDate, format = "%m/%d/%Y")) %>% 
+  mutate(CloseDate = as.Date(CloseDate, format = "%m/%d/%Y")) %>% 
+  as_tibble(df2)
+
+```
+
+```{r Subject Geocoding, include = FALSE, eval=TRUE, echo=FALSE}
+# This geocodes the subject property based on the params
+SubData <- data.frame(Street = c(params$SubjectStreet), City =c(params$SubjectCity), State = c(params$SubjectState), Zip = c(params$SubjectZip))
+SubGEO <- cxy_geocode(SubData, street = "Street", city = "City", state = "State", zip = "Zip")
+```
+
+```{r Date Values,include=FALSE}
+# Calculates dates for 1 year, 2 years and 3 years prior to the effective date based on the EffDate parameter for use in calculations, not included in output
+EffDate <- as.Date(params$EffDate)
+Prior1Yr <- EffDate - 365
+Prior2Yr <- Prior1Yr - 365
+Prior3Yr <- Prior2Yr - 365
+```
+
+```{r CMS Dataframes, include=FALSE}
+# Creates the CMS_GLA dataframe from ADF dataframe based on GLA
+# then it creates the CMS dataframe adding YrBlt as an additional filter
+CMS_GLA <- filter(df2, between(SqFtTotal, params$LowGLAComp, params$HighGLAComp))
+CMS <- filter(CMS_GLA, between(YearBuilt, params$LoYB, params$HiYB))
+# Creates the CMS1Yr and CMSTable dataframes for use by charts and tables 
+# CMS Table arranges the rows by date
+CMS1Yr <- filter(CMS, CloseDate >= Prior1Yr & CloseDate <= EffDate)
+CMSTable <- arrange(CMS1Yr,desc(CloseDate))
+```
+\ 
+<div style="text-align:left"><span style="color:black; font-family:Arial; font-size:2em;">Neighborhood Data</div>
+\
+```{r ADFSalePrice Scatterplot, echo=FALSE, message=FALSE, warning=FALSE, fig.align='center'}
+# Creates a scatterplot of sale prices with polynomial regression contrasting all SFRs and comparable SFRs
+library(tidyverse)
+options(scipen = 999)
+ggplot(data = df2, aes(`CloseDate`, `ClosePrice`, colour = "All SFRs")) +
+    geom_point(na.rm = TRUE, shape = 16) + 
+    geom_smooth(method = "lm", formula = y ~ poly(x,3), se = FALSE, colour = "red") +
+    geom_smooth(method = "lm", formula = y ~ poly(x,1), se = FALSE, colour = "darkblue") +
+    geom_point(data = CMS, aes(`CloseDate`, `ClosePrice`, colour = "Competing SFRs")) +
+    scale_y_continuous(breaks = seq(0, 2500000, by = 50000)) +
+    theme(panel.background = element_rect(fill = "white"), legend.position = "bottom", panel.grid.major = element_line(colour = "grey"), plot.title = element_text(margin = margin(0,0,20,0)), axis.title.x = element_text(vjust=-1), axis.title.y = element_text(vjust=3)) + 
+    scale_colour_manual(name = NULL, values = c("navyblue", "steelblue1")) +
+    labs(title = "Neighborhood Price Index", x = "Sale Date", y = "MLS Reported Sale Price")
+```
+
+\
+The above chart plots sale prices for all SFRs and competing SFRs, those with GLA of `r params$LowGLA` sf to `r params$HighGLA` sf, within the subject's defined physical neighborhood boundaries over the past 2 years. The trend line demonstrates market conditions over said timeframe. 
+\
+\
+\
+```{r ADFSaleHist, echo = FALSE, message=FALSE, warning=FALSE, fig.align='center'}
+# Creates a histogram of sale prices for all SFRs
+# All neighborhood data is included and competing sales are identified
+library(tidyverse)
+ggplot() +
+  geom_histogram(data = df2, aes(`ClosePrice`, fill = "All"), color = "grey") +
+  geom_histogram(data = CMS, aes(`ClosePrice`, fill = "Competing"), color = "grey", alpha = 0.75) +
+  scale_fill_manual(name = "SFR Sales", values = c("steelblue3","navy")) +
+  labs(title = "Neighborhood Sale Price Distribution", subtitle = "All Sales vs. Competing Sales") +
+  theme_bw()
+```
+\
+This histogram shows the distribution of sales volume by price for all SFRs in the neighborhood compared with those sales that directly compete with the subject property. Sale prices and volume are as reported in MLS based on a search within the neighborhood boundaries over the prior 2 years. 
+\
+\
+\
+```{r Boxplots, message=FALSE, echo=FALSE, warning=FALSE, fig.align='center'}
+#Assigns several graphs to dataframes and combines them into a grid graph layout
+#Creates a box and whisker graph of GLA: ylims are pulled from LoGLANhd and HiGLANhd parameters
+options(scipen = 999)
+PlotGLA<- ggplot(data = df2) + 
+  geom_boxplot(mapping = (aes("", `SqFtTotal`)), colour = "Black", outlier.alpha = .5, fill = "steelblue4") + 
+  guides(fill=FALSE) + 
+  labs(title = "Boxplot of Living Area", x = "", y = "Square Feet") +
+  coord_flip() +
+  theme_bw() + 
+  theme(axis.text.x = element_text(angle =45, hjust = 1)) +
+  geom_point(aes("",params$SubGLA, color = "Subject")) +
+  scale_color_manual(name = NULL, values = c("red")) +
+  theme(legend.position = "bottom", axis.title.x = element_text(vjust=-2))
+#Creates a box and whisker graph of lot sizes: y limits are auto-set
+PlotLot <- ggplot(data = df2) + 
+  geom_boxplot(mapping = (aes("", `LotSize`)), colour = "Black", outlier.alpha = .5, fill = "steelblue2") + 
+  guides(fill=FALSE) + 
+  labs(title = "Boxplot of Lot Sizes", x = "", y = "Square Feet") +
+  coord_flip() +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle =45, hjust = 1)) +
+  geom_point(aes("",params$SubLotSF, color = "Subject")) +
+  scale_color_manual(name = NULL, values = c("red")) +
+  theme(legend.position = "bottom", axis.title.x = element_text(vjust=-2))
+#Creates a box and whisker graph of year built
+PlotYB<- ggplot(data = df2) + 
+  geom_boxplot(mapping = (aes("", `YearBuilt`)), colour = "Black", outlier.alpha = .5, fill = "steelblue3") + 
+  guides(fill=FALSE) + 
+  labs(title = "Boxplot of Year Built", x = "", y = "Year") +
+  coord_flip() +
+  theme_bw() + 
+  theme(axis.text.x = element_text(angle =45, hjust = 1)) +
+  geom_point(aes("",params$SubYB, color = "Subject")) +
+  scale_color_manual(name = NULL, values = c("red")) +
+  theme(legend.position = "bottom", axis.title.x = element_text(vjust=-2))
+#combine the 3 plots into a side-by-side or grid view
+boxplots <- ggarrange(PlotYB, PlotGLA, PlotLot,ncol = 3, common.legend = TRUE, legend = "bottom")
+annotate_figure(boxplots, top = "") 
+```
+\
+The above boxplots show the distribution of 3 primary characteristics in the subject's neighborhood. The subject is identified in relation to the other homes in the neighborhood. The box area of each plot reflects 25-75% of the homes in the data, while the whiskers reflect the lower 25% and the upper 25%. 
+\
+\
+\
+\newpage
+<div style="text-align:left"><span style="color:black; font-family:Arial; font-size:2em;">Competitive Market Segment Data</div>
+\
+\
+```{r BoxPlotSalePricebyBdrmCount, echo=FALSE, message=FALSE, warning=FALSE}   
+# Creates a box and whisker graph of CMS sale prices by bedroom counts: y limits are auto-set
+BdSalePlot <- ggplot(CMS, aes(x = as.factor(BedsTotal), y = ClosePrice)) + 
+  geom_boxplot(aes(fill = as.factor(BedsTotal)), na.rm = TRUE) +
+  labs(title = NULL, subtitle = "Sale Price by Bedroom Count", x = "Number of Bedrooms", y = "Sale Price") +
+  scale_fill_manual(values = c("steelblue", "grey", "lightblue1", "grey82", "dodgerblue3","slategray3","royalblue2")) +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle =0, hjust = .5)) +
+  theme(legend.position = "none")
+```
+
+```{r BoxPlotGLAvsBdrmCount, echo=FALSE, message=FALSE, warning=FALSE}   
+# Creates a box and whisker graph of CMS living area vs bedroom counts: y limits are auto-set
+BdGLAPlot <- ggplot(CMS, aes(x = as.factor(BedsTotal), y = SqFtTotal)) + 
+  geom_boxplot(aes(fill = as.factor(BedsTotal)), na.rm = TRUE) +
+  labs(title = NULL, subtitle = "GLA vs Bedroom Count", x = "Number of Bedrooms", y = "Living Area") +
+  scale_fill_manual(values = c("steelblue", "grey", "lightblue1", "grey82", "dodgerblue3","slategray3","royalblue2")) +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle =0, hjust = .5)) +
+  theme(legend.position = "none")
+```
+
+```{r, echo=FALSE, include=TRUE, echo=FALSE, fig.align='center'}
+#Groups the named 2 boxplots into 1 graphic and gives a common title
+grid.arrange(BdSalePlot, BdGLAPlot,  ncol = 2, top = "Bedroom Count Boxplots for Competing Sales")
+```
+\
+The above boxplots show the range of sale prices of competing homes based on bedroom count and the distribution of bedroom counts in relation to living area. 
+\
+\
+\
+
+
+```{r Market Conditions by $/sf, echo=FALSE, include = TRUE, message=FALSE, warning=FALSE}
+# Creates a scatterplot for $/SF over time
+CMS$PPSF <- CMS$ClosePrice / CMS$SqFtTotal
+PPSFPlot <- ggplot(CMS, aes(`CloseDate`, PPSF)) +
+      geom_point(shape = 16, na.rm=TRUE) +
+      geom_smooth(method = lm, formula = y ~ x, se = FALSE, na.rm=TRUE) +
+      labs(title = NULL, subtitle = NULL, x = "Reported Sale Date", y = "Reported Sale Price Per Sq Ft") +
+      theme_bw()
+```
+
+```{r PPSF Time Adj, include=FALSE, echo=FALSE, echo=FALSE}
+# Specify linear model and obtain coefficents (slope[2]) for time adjustment by price per square foot
+# The PPSF_Rate converts the MktCondSlope to days from seconds
+Scipen = .999
+MktConds <- lm(PPSF ~ CloseDate, data = CMS)
+coef(MktConds) 
+MktCondSlope <- MktConds$coef[[2]]
+PPSF_Rate<- MktCondSlope
+PPSF_Rate
+
+```
+
+ 
+```{r Market Conditions by $, echo=FALSE, message=FALSE, warning=FALSE}
+# Creates a scatterplot for competing sale prices over time
+PriceSoldPlot <- ggplot(CMS, aes(`CloseDate`, ClosePrice)) +
+      geom_point(shape = 16, na.rm=TRUE) +
+      geom_smooth(method = lm, formula = y ~ x, se = FALSE, na.rm=TRUE) +
+      labs(title = NULL, subtitle = NULL, x = "Reported Sale Date", y = "Reported Sale Price") +
+      theme_bw()
+```
+
+```{r, echo = FALSE, fig.align='center'}
+#Groups the named 2 scatterplots into 1 graphic and gives a common title
+grid.arrange(PPSFPlot, PriceSoldPlot,  ncol = 1, nrow = 2,top = "Market Condition Price Indexes")
+```
+
+
+```{r PriceSold Time Adj, echo=FALSE, include=FALSE}
+# Specify linear model and obtain coefficents (slope[2]) for time adjustment
+Scipen = .999
+MktConSP <- lm(ClosePrice ~ CloseDate, data = CMS)
+coef(MktConSP) 
+MktConSPSlope <- MktConSP$coef[[2]]
+SP_Rate<- MktConSPSlope 
+#SLOPE IS CALCULATED ON SECONDS, SO IT NEEDS TO BE FORMATED TO DAYS.
+#Could just multiply by 84600
+```
+\
+The top chart shows the change in price per square foot of competing sales over time. The slope of the linear regression indicates a change of $`r round(PPSF_Rate,digits = 2)` per day. The bottom chart shows the change in recorded sale prices over time. The slope of the linear regression indicates a change of $`r round(SP_Rate,digits = 2)` per day which I've rounded to $`r round(SP_Rate, digits = 0)`.
+\
+\
+\
+
+
+
+
+```{r Market Conditions by $ past year,echo=FALSE, message=FALSE, warning=FALSE, fig.align='center'}
+# Creates a scatterplot for competing sale prices over the past year
+ggplot(CMS1Yr, aes(`CloseDate`, ClosePrice)) +
+      geom_point(shape = 16) +
+      geom_smooth(method = "lm", formula = y ~ poly(x,3), se = FALSE, colour = "red") +
+      labs(title = "Market Conditions",subtitle = "Competing sales within the past year", x = "Reported Sale Date", y = "Reported Sale Price") +
+      theme_bw()
+```
+\
+This chart drills down to the past 12 months showing the change in recorded sale prices of competing properties. The polynomial regression trend line demonstrates changes in market conditions. 
+\
+\
+\
+```{r Scatterplot of Price by GLA, warning=FALSE, echo = FALSE, fig.align='center'}
+# Creates a scatterplot for Price by GLA
+# the "method = lm" option specifies linear regression and "se = true or false" turns on or off the confidence interval band 
+ggplot(CMS, aes(`SqFtTotal`, ClosePrice)) +
+   geom_point(shape = 16) +
+   geom_smooth(method = lm,formula = y ~ x, se = FALSE) +
+   labs(title = "Sale Price by GLA", y = "Reported Sale Price", x = "Square Footage") +
+   theme_bw()
+```
+
+
+```{r GLA Predictor, include=FALSE}
+# Specify linear model and obtain coefficents (intercept [1] and slope[2]) to calculate value based on GLA
+Scipen = .999
+SFMkt <- lm(ClosePrice ~ SqFtTotal, data = CMS)
+coef(SFMkt) 
+SFMktValue <- (SFMkt$coef[[1]] + (params$SubGLA * SFMkt$coef[[2]]))
+```
+\
+This graph represents sale prices versus living area in the subject's competing sub-market over the prior 2 years. Based on this trend, a likely point value for a property of `r params$SubGLA` sf would be $`r round(SFMktValue, digits = 0)` based on the linear regression slope of `r round((SFMkt$coef[[2]]), digits = 2)`, however as shown by the confidence interval there is typically a range of most likely values. 
+\
+\
+<br>
